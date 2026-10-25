@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10151d">
+<title>Fencing Return Timer — Prototype</title>
+<style>
+  :root { color-scheme: dark; --bg:#10151d; --panel:#1a222e; --muted:#aab5c5; --line:#344153; --green:#55d69e; --red:#ff6b70; --yellow:#ffd166; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left)); background:var(--bg); color:#f4f7fb; font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:900px; margin:0 auto; display:grid; gap:14px; }
+  h1 { font-size:1.45rem; margin:0; }
+  h2 { font-size:1.05rem; margin:0; }
+  p { margin:0; color:var(--muted); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:14px; }
+  .top { display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .status { display:flex; align-items:center; gap:9px; font-weight:700; }
+  .dot { width:12px; height:12px; border-radius:50%; background:var(--yellow); box-shadow:0 0 0 4px #ffd16620; }
+  .dot.green { background:var(--green); box-shadow:0 0 0 4px #55d69e20; }
+  .dot.red { background:var(--red); box-shadow:0 0 0 4px #ff6b7020; }
+  .timer { font-size:clamp(3rem,12vw,6rem); font-variant-numeric:tabular-nums; letter-spacing:-.04em; font-weight:750; line-height:1.1; text-align:center; padding:14px 0; }
+  .video-wrap { position:relative; width:fit-content; max-width:100%; min-width:200px; min-height:150px; margin:0 auto; background:#05080d; border-radius:12px; overflow:hidden; }
+  video { display:block; max-width:100%; max-height:55vh; }
+  .zone { position:absolute; top:0; bottom:0; left:0; right:0; border:0 dashed var(--yellow); border-left-width:2px; border-right-width:2px; background:#ffd16614; pointer-events:none; }
+  .overlay { position:absolute; left:10px; top:10px; padding:6px 10px; background:#000b; border-radius:8px; font-size:.9rem; }
+  .controls { display:flex; flex-wrap:wrap; gap:8px; }
+  button { border:0; border-radius:10px; padding:11px 15px; font:inherit; font-weight:650; cursor:pointer; background:#e7edf5; color:#111821; }
+  button.secondary { background:#303b4b; color:#f4f7fb; border:1px solid #465469; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .settings { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  label { display:grid; gap:5px; color:var(--muted); font-size:.9rem; }
+  input, select { width:100%; border:1px solid #465469; border-radius:8px; background:#101721; color:#fff; padding:9px; font:inherit; }
+  .small { font-size:.86rem; }
+  .message { min-height:1.4em; }
+  .results { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  .results th,.results td { text-align:left; padding:8px 5px; border-bottom:1px solid var(--line); }
+  .results th { color:var(--muted); font-size:.85rem; font-weight:600; }
+  .empty { color:var(--muted); padding:10px 0; }
+  details summary { cursor:pointer; font-weight:650; }
+  .layout { display:grid; gap:14px; }
+  @media (min-width:700px) { .layout { grid-template-columns:1.2fr .8fr; align-items:start; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fencing Return Timer</h1>
+    <p>Camera-based presence detection prototype. Start when the fencer leaves the timing zone; stop when they return.</p>
+  </header>
+
+  <section class="panel">
+    <div class="top">
+      <div class="status" role="status"><span id="statusDot" class="dot"></span><span id="statusText">Not started</span></div>
+      <div id="confidenceText" class="small">Person confidence: —</div>
+    </div>
+    <div id="timer" class="timer">0.00 s</div>
+    <div class="controls">
+      <button id="startBtn">Start camera</button>
+      <button id="resetBtn" class="secondary" disabled>Reset attempt</button>
+      <button id="clearBtn" class="secondary">Clear results</button>
+    </div>
+    <p id="message" class="message small" aria-live="polite">Use the rear camera and keep this page open and in the foreground.</p>
+  </section>
+
+  <div class="layout">
+    <section class="panel">
+      <div class="video-wrap">
+        <video id="video" autoplay muted playsinline></video>
+        <div id="zone" class="zone"></div>
+        <div class="overlay" id="videoLabel">Camera off</div>
+      </div>
+      <p class="small" style="margin-top:10px">Only people whose centre lies inside the dashed timing zone count. Narrow the zone so coaches, referees and bystanders outside it are ignored.</p>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin-bottom:12px">Detection settings</h2>
+      <div class="settings">
+        <label>Person confidence threshold
+          <input id="threshold" type="number" min="0.1" max="0.95" step="0.05" value="0.45">
+        </label>
+        <label>Confirm absent (ms)
+          <input id="absentMs" type="number" min="0" max="1000" step="25" value="100">
+        </label>
+        <label>Confirm return (ms)
+          <input id="presentMs" type="number" min="0" max="1000" step="25" value="100">
+        </label>
+        <label>Detection interval
+          <select id="interval">
+            <option value="0">As fast as possible</option>
+            <option value="33" selected>About 30 checks/sec</option>
+            <option value="50">About 20 checks/sec</option>
+            <option value="66">About 15 checks/sec</option>
+          </select>
+        </label>
+        <label>Zone left (%)
+          <input id="zoneL" type="number" min="0" max="95" step="5" value="0">
+        </label>
+        <label>Zone right (%)
+          <input id="zoneR" type="number" min="5" max="100" step="5" value="100">
+        </label>
+      </div>
+      <p class="small" style="margin-top:12px">Confirmation periods reduce false triggers without being added to the result: the timer uses the capture time of the first frame in each confirmed change. Once present, a person must drop 0.10 below the threshold to count as gone (hysteresis). Results are approximate, not certified timing equipment, and are shown to 0.01 s.</p>
+      <details style="margin-top:14px">
+        <summary>How the timer works</summary>
+        <p class="small" style="margin-top:8px">The app waits until a person is detected in the zone, then arms itself. A confirmed disappearance starts the timer; a confirmed return stops it. If the page is hidden or the camera is lost mid-attempt, the attempt is discarded.</p>
+      </details>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="top" style="margin-bottom:8px">
+      <h2>Results</h2>
+      <span id="count" class="small">0 attempts</span>
+    </div>
+    <div id="resultsWrap" class="empty">No completed attempts yet.</div>
+  </section>
+
+  <p class="small">Prototype note: model files and the MediaPipe library load from the internet the first time. Camera access needs <code>localhost</code> or HTTPS. No video is uploaded by this page.</p>
+</main>
+
+<script type="module">
+const $ = id => document.getElementById(id);
+const video = $('video'), timerEl = $('timer'), statusText = $('statusText'), statusDot = $('statusDot');
+const message = $('message'), videoLabel = $('videoLabel'), confidenceText = $('confidenceText');
+const startBtn = $('startBtn'), resetBtn = $('resetBtn'), zoneEl = $('zone');
+
+const VISION_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float32/1/efficientdet_lite0.tflite';
+const HYSTERESIS = 0.10;
+
+let detector = null, stream = null, wakeLock = null, starting = false;
+let loopId = 0, timerRaf = 0, lastInferenceAt = -Infinity, lastVT = -1, wasPresent = false;
+let state = 'off'; // off | waiting | ready | running
+let startedAt = null, absentCand = null, returnCand = null;
+let attempts = [], seq = 0;
+const cfg = {};
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const num = (id, d) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : d; };
+const fmt = s => `${Math.max(0, s).toFixed(2)} s`;
+const setMessage = t => { message.textContent = t; };
+function setStatus(text, tone = 'yellow') {
+  statusText.textContent = text;
+  statusDot.className = 'dot' + (tone === 'green' ? ' green' : tone === 'red' ? ' red' : '');
+}
+
+function readCfg() {
+  cfg.thr = clamp(num('threshold', 0.45), 0.1, 0.95);
+  cfg.absentMs = clamp(num('absentMs', 100), 0, 1000);
+  cfg.presentMs = clamp(num('presentMs', 100), 0, 1000);
+  cfg.interval = Math.max(0, num('interval', 33));
+  cfg.zl = clamp(num('zoneL', 0), 0, 95);
+  cfg.zr = clamp(num('zoneR', 100), cfg.zl + 5, 100);
+  zoneEl.style.left = cfg.zl + '%';
+  zoneEl.style.right = (100 - cfg.zr) + '%';
+}
+document.querySelectorAll('input,select').forEach(el => { el.addEventListener('input', readCfg); el.addEventListener('change', readCfg); });
+readCfg();
+
+function renderResults() {
+  $('count').textContent = `${attempts.length} attempt${attempts.length === 1 ? '' : 's'}`;
+  const wrap = $('resultsWrap');
+  if (!attempts.length) { wrap.className = 'empty'; wrap.textContent = 'No completed attempts yet.'; return; }
+  wrap.className = '';
+  const table = document.createElement('table');
+  table.className = 'results';
+  table.innerHTML = '<thead><tr><th>#</th><th>Time</th><th>Recorded at</th></tr></thead>';
+  const tbody = document.createElement('tbody');
+  for (const a of attempts) {
+    const tr = document.createElement('tr');
+    for (const text of [String(a.n), fmt(a.duration), a.date.toLocaleTimeString()]) {
+      const td = document.createElement('td'); td.textContent = text; tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  wrap.replaceChildren(table);
+}
+
+// Best person detection whose centre lies inside the timing zone.
+function bestPerson(result) {
+  let best = null;
+  const w = video.videoWidth || 1;
+  for (const d of result.detections || []) {
+    const c = (d.categories || []).find(c => (c.categoryName || '').toLowerCase() === 'person');
+    if (!c || !d.boundingBox) continue;
+    const cx = (d.boundingBox.originX + d.boundingBox.width / 2) / w * 100;
+    if (cx < cfg.zl || cx > cfg.zr) continue;
+    if (!best || c.score > best.score) best = { score: c.score };
+  }
+  return best;
+}
+
+// Candidate = first frame of a possible state change; confirmed by elapsed capture time AND >=2 frames.
+const bump = (c, ft) => { if (c) { c.n++; return c; } return { ft, n: 1 }; };
+const confirmed = (c, ft, ms) => c.n >= (ms > 0 ? 2 : 1) && ft - c.ft >= ms;
+
+function timerLoop() {
+  if (state !== 'running' || startedAt === null) return;
+  timerEl.textContent = fmt((performance.now() - startedAt) / 1000);
+  timerRaf = requestAnimationFrame(timerLoop);
+}
+
+function beginTiming(t) {
+  startedAt = t; absentCand = returnCand = null; state = 'running';
+  timerEl.textContent = fmt(0);
+  setStatus('Timing — waiting for return', 'red');
+  setMessage('Timer running. Return to the timing zone to stop it.');
+  timerRaf = requestAnimationFrame(timerLoop);
+}
+
+function finishTiming(t) {
+  const duration = Math.max(0, (t - startedAt) / 1000);
+  attempts.unshift({ n: ++seq, duration, date: new Date() });
+  renderResults();
+  timerEl.textContent = fmt(duration);
+  startedAt = null; returnCand = null; state = 'ready';
+  setStatus(`Finished: ${fmt(duration)}`, 'green');
+  setMessage('Attempt recorded. Leave the zone again to start another attempt.');
+}
+
+function processPresence(person, ft) {
+  if (person) {
+    absentCand = null;
+    confidenceText.textContent = `Person confidence: ${(person.score * 100).toFixed(0)}%`;
+    videoLabel.textContent = 'PERSON DETECTED';
+    videoLabel.style.color = '#55d69e';
+    if (state === 'waiting') {
+      state = 'ready';
+      setStatus('Person detected — ready', 'green');
+      setMessage('The timer is armed. Move out of the zone to start.');
+    } else if (state === 'running') {
+      returnCand = bump(returnCand, ft);
+      if (confirmed(returnCand, ft, cfg.presentMs)) finishTiming(returnCand.ft);
+    }
+  } else {
+    confidenceText.textContent = 'Person confidence: —';
+    videoLabel.textContent = 'NO PERSON IN ZONE';
+    videoLabel.style.color = '#ff6b70';
+    if (state === 'ready') {
+      absentCand = bump(absentCand, ft);
+      if (confirmed(absentCand, ft, cfg.absentMs)) beginTiming(absentCand.ft);
+    } else if (state === 'running') {
+      returnCand = null;
+    }
+  }
+}
+
+// One callback per camera frame (falls back to rAF where requestVideoFrameCallback is missing).
+const schedule = cb => 'requestVideoFrameCallback' in video
+  ? video.requestVideoFrameCallback(cb)
+  : requestAnimationFrame(t => cb(t, {}));
+
+function startLoop() {
+  const id = ++loopId;
+  const onFrame = (now, meta) => {
+    if (id !== loopId || !detector) return;
+    schedule(onFrame);
+    if (!('mediaTime' in meta)) { if (video.currentTime === lastVT) return; lastVT = video.currentTime; }
+    if (now - lastInferenceAt < cfg.interval) return;
+    lastInferenceAt = now;
+    try {
+      const ft = meta.captureTime || meta.expectedDisplayTime || now; // camera capture time, same clock as performance.now()
+      const found = bestPerson(detector.detectForVideo(video, performance.now()));
+      const thr = Math.max(0.1, wasPresent ? cfg.thr - HYSTERESIS : cfg.thr);
+      const person = found && found.score >= thr ? found : null;
+      wasPresent = !!person;
+      processPresence(person, ft);
+    } catch (err) {
+      console.error(err);
+      setMessage(`Detection error: ${err.message || err}`);
+    }
+  };
+  schedule(onFrame);
+}
+
+async function lockScreen() {
+  try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
+}
+
+function cleanup() {
+  loopId++;
+  cancelAnimationFrame(timerRaf);
+  stream?.getTracks().forEach(t => t.stop());
+  stream = null; video.srcObject = null;
+  detector?.close(); detector = null;
+  wakeLock?.release().catch(() => {}); wakeLock = null;
+  state = 'off'; startedAt = absentCand = returnCand = null; wasPresent = false;
+  startBtn.textContent = 'Start camera';
+  resetBtn.disabled = true;
+}
+
+async function startCamera() {
+  starting = true; startBtn.disabled = true;
+  setMessage('Loading camera and person-detection model…');
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera API unavailable. Open this page over HTTPS or on localhost.');
+    const vision = await import(`${VISION_URL}/vision_bundle.mjs`);
+    const fileset = await vision.FilesetResolver.forVisionTasks(`${VISION_URL}/wasm`);
+    const make = delegate => vision.ObjectDetector.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: 'VIDEO', scoreThreshold: 0.1, maxResults: 5, categoryAllowlist: ['person']
+    });
+    try { detector = await make('GPU'); }
+    catch (e) { console.warn('GPU delegate failed, using CPU', e); detector = await make('CPU'); }
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60, max: 60 } }
+    });
+    stream.getVideoTracks()[0].addEventListener('ended', () => stopCamera('Camera was disconnected or taken by another app.'));
+    video.srcObject = stream;
+    await video.play();
+
+    lastInferenceAt = -Infinity; lastVT = -1;
+    resetAttempt();
+    resetBtn.disabled = false;
+    startBtn.textContent = 'Stop camera';
+    videoLabel.textContent = 'Waiting for camera';
+    startLoop();
+    lockScreen();
+  } catch (err) {
+    console.error(err);
+    cleanup();
+    setStatus('Could not start', 'red');
+    setMessage(`Could not start camera/detector: ${err.message || err}. Check camera permission and internet access, then try again.`);
+  } finally {
+    starting = false; startBtn.disabled = false;
+  }
+}
+
+function stopCamera(msg) {
+  cleanup();
+  setStatus('Camera stopped');
+  videoLabel.textContent = 'Camera off';
+  confidenceText.textContent = 'Person confidence: —';
+  timerEl.textContent = fmt(0);
+  setMessage(typeof msg === 'string' ? msg : 'Camera stopped. Start it again when ready.');
+}
+
+function resetAttempt(msg) {
+  startedAt = absentCand = returnCand = null; wasPresent = false;
+  timerEl.textContent = fmt(0);
+  if (stream) {
+    state = 'waiting';
+    setStatus('Waiting for person…');
+    setMessage(typeof msg === 'string' ? msg : 'Stand in the zone so the app can detect you and arm the timer.');
+  }
+}
+
+startBtn.addEventListener('click', () => { if (!starting) stream ? stopCamera() : startCamera(); });
+resetBtn.addEventListener('click', () => resetAttempt('Reset. Stand in the zone so the app can detect you and arm the timer.'));
+$('clearBtn').addEventListener('click', () => { attempts = []; seq = 0; renderResults(); });
+document.addEventListener('visibilitychange', () => {
+  if (!stream) return;
+  if (document.hidden) resetAttempt('Page was hidden, so the attempt was discarded. Stand in the zone to re-arm.');
+  else lockScreen();
+});
+window.addEventListener('pagehide', cleanup);
+</script>
+</body>
+</html>
